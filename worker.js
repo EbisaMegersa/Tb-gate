@@ -17,9 +17,9 @@
 // ============================================================
 
 const CONFIG = {
-  TELEBIRR_NUMBER: "09XXXXXXXX", // your Telebirr number users pay to
-  TELEBIRR_NAME: "YOUR NAME",    // EXACTLY as shown on your Telebirr account (appears as "credited party" on receipts)
-  MIN_DEPOSIT: "10",             // minimum deposit in ETB
+  TELEBIRR_NUMBER: "0931454841", // your Telebirr number users pay to
+  TELEBIRR_NAME: "Magarsa",    // EXACTLY as shown on your Telebirr account (appears as "credited party" on receipts)
+  MIN_DEPOSIT: "1",             // minimum deposit in ETB
 };
 
 const RECEIPT_SITE = "https://transactioninfo.ethiotelecom.et/receipt/";
