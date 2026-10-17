@@ -65,7 +65,7 @@ export default {
         await send(T, chatId, "Usage: `/credit 100`");
       } else {
         const bal = parseFloat(await env.WALLET.get("bal:" + userId) || "0");
-        await env.WALLET.put("bal:" + userId", String(bal + amount));
+        await env.WALLET.put("bal:" + userId, String(bal + amount));
         await send(T, chatId, `✅ Credited ${amount}. New balance: ${bal + amount} USDT`);
       }
     }
