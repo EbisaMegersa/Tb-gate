@@ -1,5 +1,5 @@
 // ============================================================
-// wallet-bot v2 — Telebirr Edition (official receipt verification)
+// wallet-bot v2.1 — Telebirr Edition (official receipt verification + /setup + /debug)
 // Birr (ETB) only · simplified commands · zero dependencies
 //
 // Deposit verification logic is ported from the open-source
@@ -17,8 +17,8 @@
 // ============================================================
 
 const CONFIG = {
-  TELEBIRR_NUMBER: "0931454841", // your Telebirr number users pay to
-  TELEBIRR_NAME: "Magarsa",    // EXACTLY as shown on your Telebirr account (appears as "credited party" on receipts)
+  TELEBIRR_NUMBER: "09XXXXXXXX", // your Telebirr number users pay to
+  TELEBIRR_NAME: "YOUR NAME",    // EXACTLY as shown on your Telebirr account (appears as "credited party" on receipts)
   MIN_DEPOSIT: "1",             // minimum deposit in ETB
 };
 
@@ -52,6 +52,12 @@ export default {
         "💵 Deposit — pay via Telebirr, credited automatically\n" +
         "💰 Balance — check your wallet\n\n" +
         "All amounts are in Ethiopian Birr (ETB).", menu());
+      if (isAdmin && /your name/i.test(cfg("TELEBIRR_NAME"))) {
+        await send(T, chatId,
+          "⚠️ Setup incomplete: TELEBIRR_NAME at the top of worker.js is still a placeholder.\n" +
+          "Until you set your exact Telebirr account name, every deposit goes to manual review instead of auto-credit.\n" +
+          "Run /setup to check everything.");
+      }
     }
 
     else if (text === "💵 Deposit" || text === "/deposit") {
@@ -151,6 +157,47 @@ export default {
       }
     }
 
+    else if (isAdmin && text.startsWith("/setup")) {
+      const rows = [];
+      rows.push((env.BOT_TOKEN ? "✅" : "❌") + " BOT_TOKEN secret");
+      rows.push((env.ADMIN_ID ? "✅" : "❌") + " ADMIN_ID secret" + (env.ADMIN_ID ? " (" + env.ADMIN_ID + ")" : ""));
+      const num = cfg("TELEBIRR_NUMBER");
+      rows.push((num && !/x/i.test(num) ? "✅" : "⚠️") + " TELEBIRR_NUMBER = " + num);
+      const nm = cfg("TELEBIRR_NAME");
+      if (!nm || /your name/i.test(nm)) {
+        rows.push("⚠️ TELEBIRR_NAME is still a placeholder — edit it at the top of worker.js to your EXACT Telebirr account name, then commit. Until then every deposit goes to manual review.");
+      } else {
+        rows.push("✅ TELEBIRR_NAME = " + nm);
+      }
+      rows.push("ℹ️ MIN_DEPOSIT = " + cfg("MIN_DEPOSIT") + " ETB");
+      await send(T, chatId, "🛠 Setup status\n\n" + rows.join("\n"));
+    }
+
+    else if (isAdmin && text.startsWith("/debug")) {
+      const no = extractReceiptNo(text);
+      if (!no) {
+        await send(T, chatId, "Usage: /debug <receipt number or full link>");
+      } else {
+        await send(T, chatId, "🔍 Fetching receipt " + no + " from the official page…");
+        let report;
+        try {
+          const res = await fetch(RECEIPT_SITE + encodeURIComponent(no), {
+            headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" },
+            signal: AbortSignal.timeout(15000),
+          });
+          const html = await res.text();
+          const fields = parseReceiptHtml(html);
+          report =
+            "HTTP: " + res.status + " | HTML size: " + html.length + " chars | <td> cells: " + (html.match(/<td[^>]*>/gi) || []).length + "\n\n" +
+            "Parsed fields:\n" + JSON.stringify(fields) + "\n\n" +
+            "Page text preview:\n" + clean(html).slice(0, 500);
+        } catch (e) {
+          report = "❌ Fetch FAILED: " + (e && e.message ? e.message : String(e)) + "\n\nIf this mentions TLS or certificate, the site is rejecting datacenter connections — send me this exact message.";
+        }
+        await send(T, chatId, report);
+      }
+    }
+
     // ---- deposit verification ----
     // Triggered by: receipt link, a forwarded/pasted Telebirr SMS,
     // or a bare receipt number.
@@ -194,16 +241,19 @@ async function handleReceipt(env, T, who, text, cfg) {
   try {
     fields = await fetchReceipt(receiptNo);
   } catch (e) {
+    const errText = e && e.message ? e.message : String(e);
     await send(T, who.chatId,
       "⚠️ The Telebirr verification page is unreachable right now.\n" +
       "Please try again in a minute — nothing was charged to your balance.");
+    await send(T, env.ADMIN_ID,
+      "🚨 Verification fetch failed\nUser: " + who.name + " (" + who.userId + ")\nReceipt: " + receiptNo + "\nError: " + errText);
     return;
   }
 
   if (!fields || Object.keys(fields).length === 0) {
     await send(T, who.chatId,
       "❌ Receipt " + receiptNo + " was not found on the official page.\n" +
-      "Check the number and send it again.");
+      "Check the number and send it again. If it is correct, ask the admin to run:\n/debug " + receiptNo);
     return;
   }
 
@@ -260,24 +310,27 @@ async function handleReceipt(env, T, who, text, cfg) {
 function extractReceiptNo(text) {
   const url = text.match(/transactioninfo\.ethiotelecom\.et\/receipt\/([A-Za-z0-9]+)/i);
   if (url) return url[1].toUpperCase();
-  const labelled = text.match(/(?:receipt|የክፍያ\s*ቁጥር)\s*(?:no\.?|number)?\s*[:\-]?\s*([A-Za-z0-9]{6,20})/i);
+  const labelled = text.match(/(?:receipt|የክፍያ\s*ቁጥር|ደረሰኝ)\s*(?:no\.?|number)?\s*[:\-]?\s*([A-Za-z0-9]{6,20})/i);
   if (labelled) return labelled[1].toUpperCase();
   const bare = text.trim();
   if (/^[A-Za-z0-9]{8,16}$/.test(bare)) return bare.toUpperCase();
   return null;
 }
 
-// Ported from telebirr-receipt (parseFromHTML + loadReceipt),
-// rewritten for Workers: fetch() + regex <td> extraction instead
-// of Node https + htmlparser2.
+// Ported from telebirr-receipt (parseFromHTML + loadReceipt) and
+// rewritten for Workers: fetch() + regex <td> extraction instead of
+// Node https + htmlparser2. A loose text fallback runs when the
+// strict labels aren't found (site layout changes).
 async function fetchReceipt(receiptNo) {
   const res = await fetch(RECEIPT_SITE + encodeURIComponent(receiptNo), {
     headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" },
     signal: AbortSignal.timeout(15000),
   });
   if (!res.ok) throw new Error("HTTP " + res.status);
-  const html = await res.text();
+  return parseReceiptHtml(await res.text());
+}
 
+function parseReceiptHtml(html) {
   const tds = [];
   const re = /<td[^>]*>([\s\S]*?)<\/td>/gi;
   let m;
@@ -304,7 +357,40 @@ async function fetchReceipt(receiptNo) {
       fields[key] = next;
     }
   });
+
+  if (!fields.credited_party_name || !fields.transaction_status || !(fields.total_amount || fields.settled_amount)) {
+    looseParse(clean(html), fields);
+  }
   return fields;
+}
+
+function looseParse(flat, f) {
+  const boundary = /(የ|Payer|Credited|Transaction|Receipt|Payment|Settled|Discount|VAT|Total|Bank|15%)/i;
+  const pick = (labelRe) => {
+    const m = flat.match(labelRe);
+    if (!m) return null;
+    const rest = flat.slice(m.index + m[0].length, m.index + m[0].length + 150);
+    const stop = rest.match(boundary);
+    return (stop ? rest.slice(0, stop.index) : rest)
+      .replace(/^[\s\/:,.-]+/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+  const num = (v) => (v ? parseFloat(String(v).replace(/birr/ig, "").trim()) || 0 : 0);
+
+  if (!f.payer_name) f.payer_name = pick(/payer\s*name/i);
+  if (!f.payer_phone) f.payer_phone = pick(/payer\s*(?:telebirr\s*no|phone)/i);
+  if (!f.credited_party_name) f.credited_party_name = pick(/credited\s*party\s*name/i);
+  if (!f.credited_party_acc_no) f.credited_party_acc_no = pick(/credited\s*party\s*(?:account\s*no|telebirr)/i);
+  if (!f.transaction_status) f.transaction_status = pick(/transaction\s*status/i);
+  if (!f.receiptNo) f.receiptNo = pick(/receipt\s*no\.?/i);
+  if (!f.date) f.date = pick(/payment\s*date/i);
+  if (!f.settled_amount) f.settled_amount = num(pick(/settled\s*amount/i));
+  if (!f.total_amount) f.total_amount = num(pick(/total\s*amount\s*paid/i));
+
+  for (const k of Object.keys(f)) {
+    if (f[k] === "" || f[k] === null || f[k] === undefined) delete f[k];
+  }
 }
 
 function clean(s) {
