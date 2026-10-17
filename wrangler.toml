@@ -1,0 +1,7 @@
+name = "wallet-bot"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[[kv_namespaces]]
+binding = "WALLET"
+id = "91cbc3d825674b43bb5b9fdb747114d3"
